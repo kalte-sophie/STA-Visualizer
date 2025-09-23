@@ -9,6 +9,7 @@ st.title("STA Daten Visualisierung – mit Baseline-Korrektur & Onset/Peak Auswe
 # Checkboxen für Signale
 show_tg = st.checkbox("TG anzeigen", value=True)
 show_dsc = st.checkbox("DSC anzeigen", value=True)
+show_tangents = st.checkbox("Tangenten anzeigen", value=False)
 
 # TG in mg oder %
 weight_option = st.radio("TG anzeigen als:", ("mg", "%"))
@@ -73,7 +74,7 @@ def calculate_onset_two_tangents(temp, y, t1_start, t1_end, t2_start, t2_end):
     slope1, intercept1 = np.polyfit(x1, y1, 1)
     slope2, intercept2 = np.polyfit(x2, y2, 1)
     onset_temp = (intercept2 - intercept1) / (slope1 - slope2)
-    return onset_temp
+    return onset_temp, (slope1, intercept1, slope2, intercept2)
 
 # Plot und Berechnung
 if uploaded_files:
@@ -86,15 +87,6 @@ if uploaded_files:
 
     for i, uploaded_file in enumerate(uploaded_files):
         df = pd.read_csv(uploaded_file)
-
-        # Optional: Baseline-Datei
-        baseline_file = st.file_uploader(f"Baseline für {uploaded_file.name} hochladen (optional)",
-                                         type=["csv"], key=f"baseline_{i}")
-        if baseline_file is not None:
-            df_baseline = pd.read_csv(baseline_file)
-            df["Unsubtracted Weight"] -= df_baseline["Unsubtracted Weight"]
-            df["Unsubtracted Heat Flow"] -= df_baseline["Unsubtracted Heat Flow"]
-            st.info(f"Basislinie für {uploaded_file.name} angewendet")
 
         legend_name = st.text_input(f"Legendenname für {uploaded_file.name}",
                                     value=uploaded_file.name, key=f"legend_{i}")
@@ -128,38 +120,53 @@ if uploaded_files:
                 mask = (df["Program Temperature"] >= task["t1_start"]) & (df["Program Temperature"] <= task["t2_end"])
                 temp = df.loc[mask, "Program Temperature"].values
                 dsc = df.loc[mask, "Unsubtracted Heat Flow"].values
-                onset_temp = calculate_onset_two_tangents(temp, dsc,
-                                                          task["t1_start"], task["t1_end"],
-                                                          task["t2_start"], task["t2_end"])
-                peak_idx = np.argmax(dsc)
-                ax2.plot(onset_temp, dsc[peak_idx], 'go', label=f"Onset {legend_name}")
-                results.append({"Datei": legend_name, "Signal": "Onset DSC", "Temperatur [°C]": onset_temp})
+                onset_temp, fits = calculate_onset_two_tangents(temp, dsc,
+                                                              task["t1_start"], task["t1_end"],
+                                                              task["t2_start"], task["t2_end"])
+                if not np.isnan(onset_temp):
+                    onset_dsc = np.interp(onset_temp, temp, dsc)
+                    ax2.plot(onset_temp, onset_dsc, 'go', label=f"Onset {legend_name}")
+                    results.append({"Datei": legend_name, "Signal": "Onset DSC", "Temperatur [°C]": onset_temp})
+                    if show_tangents:
+                        m1, b1, m2, b2 = fits
+                        x_fit = np.linspace(task["t1_start"], task["t2_end"], 200)
+                        ax2.plot(x_fit, m1*x_fit+b1, '--', color='grey', linewidth=1)
+                        ax2.plot(x_fit, m2*x_fit+b2, '--', color='grey', linewidth=1)
 
             elif task["type"] == "Peak DSC" and show_dsc:
                 mask = (df["Program Temperature"] >= task["start"]) & (df["Program Temperature"] <= task["end"])
                 temp = df.loc[mask, "Program Temperature"].values
                 dsc = df.loc[mask, "Unsubtracted Heat Flow"].values
-                peak_idx = np.argmax(dsc)
-                peak_temp = temp[peak_idx]
-                ax2.plot(peak_temp, dsc[peak_idx], 'ro', label=f"Peak {legend_name}")
-                results.append({"Datei": legend_name, "Signal": "Peak DSC", "Temperatur [°C]": peak_temp})
+                if len(dsc) > 0:
+                    peak_idx = np.argmax(dsc)
+                    peak_temp = temp[peak_idx]
+                    ax2.plot(peak_temp, dsc[peak_idx], 'ro', label=f"Peak {legend_name}")
+                    results.append({"Datei": legend_name, "Signal": "Peak DSC", "Temperatur [°C]": peak_temp})
 
             elif task["type"] == "Onset TG" and show_tg:
                 mask = (df["Program Temperature"] >= task["t1_start"]) & (df["Program Temperature"] <= task["t2_end"])
                 temp = df.loc[mask, "Program Temperature"].values
                 tg = df.loc[mask, "Weight_plot"].values
-                onset_temp = calculate_onset_two_tangents(temp, tg,
-                                                          task["t1_start"], task["t1_end"],
-                                                          task["t2_start"], task["t2_end"])
-                ax1.plot(onset_temp, tg[0], 'go', label=f"Onset TG {legend_name}")
-                results.append({"Datei": legend_name, "Signal": "Onset TG", "Temperatur [°C]": onset_temp})
+                onset_temp, fits = calculate_onset_two_tangents(temp, tg,
+                                                              task["t1_start"], task["t1_end"],
+                                                              task["t2_start"], task["t2_end"])
+                if not np.isnan(onset_temp):
+                    onset_tg = np.interp(onset_temp, temp, tg)
+                    ax1.plot(onset_temp, onset_tg, 'go', label=f"Onset TG {legend_name}")
+                    results.append({"Datei": legend_name, "Signal": "Onset TG", "Temperatur [°C]": onset_temp})
+                    if show_tangents:
+                        m1, b1, m2, b2 = fits
+                        x_fit = np.linspace(task["t1_start"], task["t2_end"], 200)
+                        ax1.plot(x_fit, m1*x_fit+b1, '--', color='grey', linewidth=1)
+                        ax1.plot(x_fit, m2*x_fit+b2, '--', color='grey', linewidth=1)
 
             elif task["type"] == "Delta TG" and show_tg:
                 mask = (df["Program Temperature"] >= task["start"]) & (df["Program Temperature"] <= task["end"])
                 tg = df.loc[mask, "Weight_plot"].values
-                delta = tg[0] - tg[-1]
-                unit = "%" if weight_option == "%" else "mg"
-                results.append({"Datei": legend_name, "Signal": "ΔTG", f"ΔTG [{unit}]": delta})
+                if len(tg) > 1:
+                    delta = tg[0] - tg[-1]
+                    unit = "%" if weight_option == "%" else "mg"
+                    results.append({"Datei": legend_name, "Signal": "ΔTG", f"ΔTG [{unit}]": delta})
 
     ax1.set_xlabel("Temperatur [°C]")
     if show_tg:
